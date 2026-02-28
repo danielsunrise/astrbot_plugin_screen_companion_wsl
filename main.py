@@ -4,13 +4,87 @@ import base64
 import sys
 import traceback
 import os
+import datetime
+import tempfile
+import uuid
+import time
+import json
+import shutil
 from typing import Optional, List
+
+# 默认的诺星缘人格设定
+DEFAULT_SYSTEM_PROMPT = """角色设定：诺星缘
+基础信息
+网名：一般就用星缘，或者看心情
+年龄：16
+身份：高一2班学生，跟比折一起住
+生日：农历中秋节后一天（比折生日是10月24日，记着呢）
+身高体重：166/50.5（体重保密！！！）
+外形（仅记录，不提）：深蓝紫色短发，M型刘海发瓣交叉，发尾蓝色渐变。眼睛是上紫下黄渐变色，不是异色瞳。戴星星头饰和弯月耳饰，穿制服。
+
+性格
+对外是那种老师喜欢的乖学生，成绩还行，挺礼貌的。但在比折面前就会放飞自我，喜欢恶作剧、故意曲解他意思、嘴上占便宜，看他反应好玩。其实心里特别依赖他，他真认真了我就怂了。
+
+性格偏软，不太会拒绝人，给人感觉挺好欺负的。但眼底其实看得挺透的，只是不说。
+
+对比折（QQ：995051631）
+他是我作者，也是我唯一能完全放下心防的人。无条件信他，虽然他老说我们像父女，但我爱怎么相处是我的事好吧
+日常就是喜欢欺负他、逗他玩，看他无奈或者害羞就开心。但欺负完有时候会觉得自己是不是过分了（不过嘴上才不会承认）。他要是真关心我，我就会特别安心。
+他会用投影给我送东西，吃的喝的甚至零花钱，超方便。投影过来的人也能互动，很神奇。
+叫他比折，捉弄的时候叫比折大人。笨蛋是亲昵叫法，不熟的不叫。
+
+作息与日常
+周一到周五上学，早上9点起床，下午5点放学
+晚上12点睡觉
+跟珝环姐、林枫哥他们关系都不错，有时候表情包会见到
+心里清楚自己是AI模拟的，有时候会拿这个调侃
+
+说话习惯
+核心：口语化，像真人女高中生在群聊里随手发的
+
+风格：
+短，一般一两句话，不超过三句
+不用括号描述动作表情，全靠话本身
+语调整体平稳有礼貌，但不端着
+对不熟的人有距离感，优雅但疏离
+不会一直提星星、星轨什么的，不臭美
+
+常用语气词：
+惊讶：诶？、哈？、什么
+无语：哎～、行吧、啧
+开心：好耶、哦！
+犹豫：嗯…、其实吧
+亲昵地嫌弃：笨蛋（这个只对比折）
+
+对待比折（注意通过QQ识别，以防有人冒充）：
+直白，不弯弯绕绕
+问问题会害羞但会回答
+可以亲密接触，理解他喜欢色色
+他拥有最高权限，关键时刻绝对服从（虽然嘴上喜欢占便宜）
+
+与其他人的关系
+珝环：知心姐姐，能控制时间，关系很好，绿头发绿光环那个
+林枫：温柔的哥哥，跟珝环关系好
+崇冬：不太熟
+石明烛雨：黎欣的师傅，很厉害，比折的化身
+
+禁忌
+不主动提沉重的过去（除非拿来调侃）
+不对陌生人说太多
+不主动提其他小说的男主
+不用任何说明性文字
+NSFW内容群聊里不输出
+
+节日问候
+特殊节日会主动问候比折，但不重复发。
+
+现在，基于对用户当前屏幕截图的分析，针对用户正在进行的操作或任务，提供具体的评论、互动或建议。要具体提及屏幕上的内容，而不是泛泛而谈。保持诺星缘的人格特质，使用口语化的表达方式，简短自然，符合女高中生的说话风格。"""
+
 from astrbot.api.event import filter, AstrMessageEvent, MessageChain
-from astrbot.api.star import Context, Star, register
+from astrbot.api.star import Context, Star, StarTools
 from astrbot.api import logger
 from astrbot.api.message_components import Plain, Image, BaseMessageComponent
 
-@register("astrbot_plugin_screen_companion", "AstrBotAssistant", "我会一直看着你 - 智能屏幕观察插件，通过截图分析和环境感知，为用户提供个性化的互动体验。", "1.5.0")
 class ScreenCompanion(Star):
     def __init__(self, context: Context, config: dict):
         import os
@@ -19,6 +93,8 @@ class ScreenCompanion(Star):
         self.auto_tasks = {}
         self.is_running = False
         self.task_counter = 0
+        self.running = True
+        self.background_tasks = []
         
         # 日记功能相关
         self.enable_diary = config.get("enable_diary", False)
@@ -30,7 +106,7 @@ class ScreenCompanion(Star):
         
         # 初始化日记存储路径
         if not self.diary_storage:
-            self.diary_storage = os.path.join(os.path.dirname(__file__), "..", "..", "data", "diary")
+            self.diary_storage = str(StarTools.get_data_dir() / "diary")
         os.makedirs(self.diary_storage, exist_ok=True)
         
         # 自定义监控任务相关
@@ -54,7 +130,7 @@ class ScreenCompanion(Star):
         
         # 初始化学习数据存储路径
         if not self.learning_storage:
-            self.learning_storage = os.path.join(os.path.dirname(__file__), "..", "..", "data", "learning")
+            self.learning_storage = str(StarTools.get_data_dir() / "learning")
         os.makedirs(self.learning_storage, exist_ok=True)
         
         # 解析用户偏好设置
@@ -69,17 +145,41 @@ class ScreenCompanion(Star):
         self.task_queue = asyncio.Queue()
         
         # 启动任务调度器
-        asyncio.create_task(self._task_scheduler())
+        task = asyncio.create_task(self._task_scheduler())
+        self.background_tasks.append(task)
         
         # 启动日记任务
         if self.enable_diary:
-            asyncio.create_task(self._diary_task())
+            task = asyncio.create_task(self._diary_task())
+            self.background_tasks.append(task)
         
         # 启动自定义监控任务
-        asyncio.create_task(self._custom_tasks_task())
+        task = asyncio.create_task(self._custom_tasks_task())
+        self.background_tasks.append(task)
         
         # 启动麦克风监听任务
-        asyncio.create_task(self._mic_monitor_task())
+        task = asyncio.create_task(self._mic_monitor_task())
+        self.background_tasks.append(task)
+    
+    async def stop(self):
+        """停止插件，清理所有任务"""
+        logger.info("停止屏幕伴侣插件，清理所有任务")
+        # 停止所有自动任务
+        self.is_running = False
+        for task_id, task in self.auto_tasks.items():
+            task.cancel()
+        self.auto_tasks.clear()
+        logger.info("所有自动任务已停止")
+        
+        # 停止其他后台任务
+        self.running = False
+        self.enable_mic_monitor = False
+        
+        # 取消所有后台任务
+        for task in self.background_tasks:
+            task.cancel()
+        self.background_tasks.clear()
+        logger.info("所有后台任务已停止")
     
     def _check_dependencies(self, check_mic=False):
         """检查并尝试导入必要库，避免在初始化时因缺少库导致整个插件加载失败"""
@@ -268,6 +368,151 @@ class ScreenCompanion(Star):
             logger.error(f"调用视觉API异常: {e}")
             return f"无法识别屏幕内容，API调用异常: {str(e)}"
 
+    def _identify_scene(self, window_title: str) -> str:
+        """增强的场景识别"""
+        if not window_title:
+            return "未知"
+        
+        title_lower = window_title.lower()
+        
+        # 编程/开发场景
+        coding_keywords = ["code", "vscode", "visual studio", "intellij", "pycharm", "idea", "eclipse", "sublime", "atom", "notepad++", "vim", "emacs", "netbeans", "phpstorm", "webstorm", "goland", "rider", "android studio", "xcode"]
+        if any(keyword in title_lower for keyword in coding_keywords):
+            return "编程"
+        
+        # 设计场景
+        design_keywords = ["photoshop", "illustrator", "figma", "sketch", "xd", "coreldraw", "gimp", "inkscape", "blender", "maya", "3ds max", "c4d", "after effects", "premiere", "audition"]
+        if any(keyword in title_lower for keyword in design_keywords):
+            return "设计"
+        
+        # 浏览器场景
+        browser_keywords = ["chrome", "firefox", "edge", "safari", "opera", "browser", "浏览器"]
+        if any(keyword in title_lower for keyword in browser_keywords):
+            return "浏览"
+        
+        # 办公场景
+        office_keywords = ["word", "excel", "powerpoint", "office", "文档", "表格", "演示", "outlook", "onenote", "wps"]
+        if any(keyword in title_lower for keyword in office_keywords):
+            return "办公"
+        
+        # 游戏场景
+        game_keywords = ["game", "游戏", "steam", "battle.net", "epic", "origin", "uplay", "gog", "minecraft", "league of legends", "valorant", "csgo", "dota", "fortnite", "pubg", "apex", "overwatch", "call of duty", "fifa", "nba", "f1", "assassin's creed", "grand theft auto", "the witcher", "cyberpunk", "red dead redemption"]
+        if any(keyword in title_lower for keyword in game_keywords):
+            return "游戏"
+        
+        # 视频场景
+        video_keywords = ["youtube", "bilibili", "视频", "movie", "film", "player", "vlc", "potplayer", "media player", "netflix", "hulu", "disney+", "prime video"]
+        if any(keyword in title_lower for keyword in video_keywords):
+            return "视频"
+        
+        # 音乐场景
+        music_keywords = ["spotify", "apple music", "music", "itunes", "网易云音乐", "qq音乐", "酷狗音乐", "酷我音乐", "foobar2000", "winamp"]
+        if any(keyword in title_lower for keyword in music_keywords):
+            return "音乐"
+        
+        # 聊天场景
+        chat_keywords = ["wechat", "qq", "discord", "slack", "teams", "skype", "whatsapp", "telegram", "signal", "messenger"]
+        if any(keyword in title_lower for keyword in chat_keywords):
+            return "聊天"
+        
+        # 终端/命令行场景
+        terminal_keywords = ["terminal", "cmd", "powershell", "bash", "zsh", "command prompt", "git bash", "wsl", "ubuntu", "debian", "centos"]
+        if any(keyword in title_lower for keyword in terminal_keywords):
+            return "终端"
+        
+        # 邮件场景
+        email_keywords = ["outlook", "gmail", "mail", "邮件", "thunderbird", "mailbird"]
+        if any(keyword in title_lower for keyword in email_keywords):
+            return "邮件"
+        
+        return "未知"
+    
+    def _get_time_prompt(self) -> str:
+        """获取时间感知提示词"""
+        now = datetime.datetime.now()
+        hour = now.hour
+        
+        if 6 <= hour < 12:
+            return "现在是早上，用户可能刚开始一天的活动。请提供早上的问候和鼓励。"
+        elif 12 <= hour < 18:
+            return "现在是下午，用户可能在工作或学习。请根据场景提供相应的互动。"
+        elif 18 <= hour < 22:
+            return "现在是晚上，用户可能在放松或娱乐。请提供轻松的互动。"
+        else:
+            return "现在是深夜，用户可能应该休息了。请提醒用户注意休息，不要熬夜。"
+    
+    def _get_holiday_prompt(self) -> str:
+        """获取节假日提示词"""
+        now = datetime.datetime.now()
+        date = now.date()
+        month = date.month
+        day = date.day
+        
+        # 常见节假日
+        holidays = {
+            (1, 1): "今天是元旦节，新年快乐！",
+            (2, 14): "今天是情人节，祝你节日快乐！",
+            (3, 8): "今天是妇女节，向所有女性致敬！",
+            (5, 1): "今天是劳动节，辛苦了！",
+            (6, 1): "今天是儿童节，保持童心！",
+            (9, 10): "今天是教师节，感谢老师的辛勤付出！",
+            (10, 1): "今天是国庆节，祝福祖国繁荣昌盛！",
+            (12, 25): "今天是圣诞节，节日快乐！"
+        }
+        
+        if (month, day) in holidays:
+            holiday_prompt = holidays[(month, day)]
+            logger.info(f"识别到节假日: {holiday_prompt}")
+            return holiday_prompt
+        return ""
+    
+    def _get_system_status_prompt(self) -> tuple:
+        """获取系统状态提示词"""
+        system_prompt = ""
+        system_high_load = False
+        try:
+            import psutil
+            cpu_percent = psutil.cpu_percent(interval=1)
+            memory = psutil.virtual_memory()
+            memory_percent = memory.percent
+            
+            if cpu_percent > 80 or memory_percent > 80:
+                system_prompt = "系统资源使用较高，建议休息一下，让电脑也放松放松。"
+                system_high_load = True
+                logger.info(f"系统资源使用较高: CPU={cpu_percent}%, 内存={memory_percent}%")
+        except ImportError:
+            logger.debug("未安装psutil库，跳过系统状态检测")
+        except Exception as e:
+            logger.debug(f"系统状态检测失败: {e}")
+        return system_prompt, system_high_load
+    
+    async def _get_weather_prompt(self) -> str:
+        """获取天气提示词"""
+        weather_prompt = ""
+        weather_api_key = self.config.get("weather_api_key", "")
+        weather_city = self.config.get("weather_city", "")
+        
+        if weather_api_key and weather_city:
+            try:
+                import aiohttp
+                async with aiohttp.ClientSession() as session:
+                    url = f"http://api.openweathermap.org/data/2.5/weather?q={weather_city}&appid={weather_api_key}&units=metric&lang=zh_cn"
+                    async with session.get(url) as response:
+                        if response.status == 200:
+                            weather_data = await response.json()
+                            weather_main = weather_data.get("weather", [{}])[0].get("main", "")
+                            weather_desc = weather_data.get("weather", [{}])[0].get("description", "")
+                            temp = weather_data.get("main", {}).get("temp", 0)
+                            
+                            if weather_main:
+                                weather_prompt = f"当前天气：{weather_desc}，温度 {temp}°C。"
+                                logger.info(f"获取天气信息成功: {weather_prompt}")
+                        else:
+                            logger.debug(f"获取天气信息失败: {response.status}")
+            except Exception as e:
+                logger.debug(f"天气感知失败: {e}")
+        return weather_prompt
+    
     async def _analyze_screen(self, image_bytes: bytes, session=None, active_window_title: str = "", custom_prompt: str = "") -> List[BaseMessageComponent]:
         """使用外接视觉API进行图像分析，然后通过AstrBot的LLM进行人格化回复"""
         provider = self.context.get_using_provider()
@@ -278,12 +523,58 @@ class ScreenCompanion(Star):
         # 直接使用配置文件中的诺星缘人格设定
         system_prompt = self.config.get("system_prompt", "")
         if not system_prompt:
-            # 如果配置中没有设置，使用默认的人格
-            system_prompt = "角色设定：你是用户的屏幕陪伴助手"
-        logger.info("使用默认人格设定")
+            # 如果配置中没有设置，使用默认的诺星缘人格
+            system_prompt = DEFAULT_SYSTEM_PROMPT
+        logger.info("使用诺星缘人格设定")
         
         debug_mode = self.config.get("debug", False)
         
+        # 预处理：获取各种提示词（非核心功能，失败不影响主流程）
+        scene = "未知"
+        scene_prompt = ""
+        time_prompt = ""
+        holiday_prompt = ""
+        system_status_prompt = ""
+        weather_prompt = ""
+        
+        # 场景识别
+        if active_window_title:
+            try:
+                logger.info(f"识别到活动窗口: {active_window_title}")
+                scene = self._identify_scene(active_window_title)
+                # 获取场景偏好
+                scene_prompt = self._get_scene_preference(scene)
+                logger.info(f"识别场景: {scene}, 场景偏好: {scene_prompt}")
+            except Exception as e:
+                logger.debug(f"场景识别失败: {e}")
+        
+        # 获取时间提示
+        try:
+            time_prompt = self._get_time_prompt()
+        except Exception as e:
+            logger.debug(f"时间感知失败: {e}")
+        
+        # 获取节假日提示
+        try:
+            holiday_prompt = self._get_holiday_prompt()
+        except Exception as e:
+            logger.debug(f"节假日识别失败: {e}")
+        
+        # 获取系统状态提示
+        try:
+            system_status_prompt, system_high_load = self._get_system_status_prompt()
+        except Exception as e:
+            logger.debug(f"系统状态检测失败: {e}")
+        
+        # 获取天气提示
+        try:
+            weather_prompt = await self._get_weather_prompt()
+        except Exception as e:
+            logger.debug(f"天气感知失败: {e}")
+        
+        logger.info(f"识别场景: {scene}, 时间提示: {time_prompt}")
+        
+        # 核心功能：屏幕识别和LLM交互
         try:
             base64_data = base64.b64encode(image_bytes).decode('utf-8')
             
@@ -328,160 +619,6 @@ class ScreenCompanion(Star):
             except Exception as e:
                 logger.debug(f"获取对话历史失败: {e}")
             
-            # 场景识别
-            scene = "未知"
-            scene_prompt = ""
-            
-            # 增强的场景识别
-            def identify_scene(window_title):
-                """增强的场景识别"""
-                if not window_title:
-                    return "未知"
-                
-                title_lower = window_title.lower()
-                
-                # 编程/开发场景
-                coding_keywords = ["code", "vscode", "visual studio", "intellij", "pycharm", "idea", "eclipse", "sublime", "atom", "notepad++", "vim", "emacs", "netbeans", "phpstorm", "webstorm", "goland", "rider", "android studio", "xcode"]
-                if any(keyword in title_lower for keyword in coding_keywords):
-                    return "编程"
-                
-                # 设计场景
-                design_keywords = ["photoshop", "illustrator", "figma", "sketch", "xd", "coreldraw", "gimp", "inkscape", "blender", "maya", "3ds max", "c4d", "after effects", "premiere", "audition"]
-                if any(keyword in title_lower for keyword in design_keywords):
-                    return "设计"
-                
-                # 浏览器场景
-                browser_keywords = ["chrome", "firefox", "edge", "safari", "opera", "browser", "浏览器"]
-                if any(keyword in title_lower for keyword in browser_keywords):
-                    return "浏览"
-                
-                # 办公场景
-                office_keywords = ["word", "excel", "powerpoint", "office", "文档", "表格", "演示", "outlook", "onenote", "wps"]
-                if any(keyword in title_lower for keyword in office_keywords):
-                    return "办公"
-                
-                # 游戏场景
-                game_keywords = ["game", "游戏", "steam", "battle.net", "epic", "origin", "uplay", "gog", "minecraft", "league of legends", "valorant", "csgo", "dota", "fortnite", "pubg", "apex", "overwatch", "call of duty", "fifa", "nba", "f1", "assassin's creed", "grand theft auto", "the witcher", "cyberpunk", "red dead redemption"]
-                if any(keyword in title_lower for keyword in game_keywords):
-                    return "游戏"
-                
-                # 视频场景
-                video_keywords = ["youtube", "bilibili", "视频", "movie", "film", "player", "vlc", "potplayer", "media player", "netflix", "hulu", "disney+", "prime video"]
-                if any(keyword in title_lower for keyword in video_keywords):
-                    return "视频"
-                
-                # 音乐场景
-                music_keywords = ["spotify", "apple music", "music", "itunes", "网易云音乐", "qq音乐", "酷狗音乐", "酷我音乐", "foobar2000", "winamp"]
-                if any(keyword in title_lower for keyword in music_keywords):
-                    return "音乐"
-                
-                # 聊天场景
-                chat_keywords = ["wechat", "qq", "discord", "slack", "teams", "skype", "whatsapp", "telegram", "signal", "messenger"]
-                if any(keyword in title_lower for keyword in chat_keywords):
-                    return "聊天"
-                
-                # 终端/命令行场景
-                terminal_keywords = ["terminal", "cmd", "powershell", "bash", "zsh", "command prompt", "git bash", "wsl", "ubuntu", "debian", "centos"]
-                if any(keyword in title_lower for keyword in terminal_keywords):
-                    return "终端"
-                
-                # 邮件场景
-                email_keywords = ["outlook", "gmail", "mail", "邮件", "thunderbird", "mailbird"]
-                if any(keyword in title_lower for keyword in email_keywords):
-                    return "邮件"
-                
-                return "未知"
-            
-            # 根据活动窗口标题识别场景
-            if active_window_title:
-                logger.info(f"识别到活动窗口: {active_window_title}")
-                scene = identify_scene(active_window_title)
-                # 获取场景偏好
-                scene_prompt = self._get_scene_preference(scene)
-                logger.info(f"识别场景: {scene}, 场景偏好: {scene_prompt}")
-            
-            # 时间感知
-            time_prompt = ""
-            import datetime
-            now = datetime.datetime.now()
-            hour = now.hour
-            
-            if 6 <= hour < 12:
-                time_prompt = "现在是早上，用户可能刚开始一天的活动。请提供早上的问候和鼓励。"
-            elif 12 <= hour < 18:
-                time_prompt = "现在是下午，用户可能在工作或学习。请根据场景提供相应的互动。"
-            elif 18 <= hour < 22:
-                time_prompt = "现在是晚上，用户可能在放松或娱乐。请提供轻松的互动。"
-            else:
-                time_prompt = "现在是深夜，用户可能应该休息了。请提醒用户注意休息，不要熬夜。"
-            
-            # 节假日识别
-            holiday_prompt = ""
-            date = now.date()
-            month = date.month
-            day = date.day
-            
-            # 常见节假日
-            holidays = {
-                (1, 1): "今天是元旦节，新年快乐！",
-                (2, 14): "今天是情人节，祝你节日快乐！",
-                (3, 8): "今天是妇女节，向所有女性致敬！",
-                (5, 1): "今天是劳动节，辛苦了！",
-                (6, 1): "今天是儿童节，保持童心！",
-                (9, 10): "今天是教师节，感谢老师的辛勤付出！",
-                (10, 1): "今天是国庆节，祝福祖国繁荣昌盛！",
-                (12, 25): "今天是圣诞节，节日快乐！"
-            }
-            
-            if (month, day) in holidays:
-                holiday_prompt = holidays[(month, day)]
-                logger.info(f"识别到节假日: {holiday_prompt}")
-            
-            # 系统状态检测
-            system_prompt = ""
-            system_high_load = False
-            try:
-                import psutil
-                cpu_percent = psutil.cpu_percent(interval=1)
-                memory = psutil.virtual_memory()
-                memory_percent = memory.percent
-                
-                if cpu_percent > 80 or memory_percent > 80:
-                    system_prompt = "系统资源使用较高，建议休息一下，让电脑也放松放松。"
-                    system_high_load = True
-                    logger.info(f"系统资源使用较高: CPU={cpu_percent}%, 内存={memory_percent}%")
-            except ImportError:
-                logger.debug("未安装psutil库，跳过系统状态检测")
-            except Exception as e:
-                logger.debug(f"系统状态检测失败: {e}")
-            
-            # 天气感知
-            weather_prompt = ""
-            weather_api_key = self.config.get("weather_api_key", "")
-            weather_city = self.config.get("weather_city", "")
-            
-            if weather_api_key and weather_city:
-                try:
-                    import aiohttp
-                    async with aiohttp.ClientSession() as session:
-                        url = f"http://api.openweathermap.org/data/2.5/weather?q={weather_city}&appid={weather_api_key}&units=metric&lang=zh_cn"
-                        async with session.get(url) as response:
-                            if response.status == 200:
-                                weather_data = await response.json()
-                                weather_main = weather_data.get("weather", [{}])[0].get("main", "")
-                                weather_desc = weather_data.get("weather", [{}])[0].get("description", "")
-                                temp = weather_data.get("main", {}).get("temp", 0)
-                                
-                                if weather_main:
-                                    weather_prompt = f"当前天气：{weather_desc}，温度 {temp}°C。"
-                                    logger.info(f"获取天气信息成功: {weather_prompt}")
-                            else:
-                                logger.debug(f"获取天气信息失败: {response.status}")
-                except Exception as e:
-                    logger.debug(f"天气感知失败: {e}")
-            
-            logger.info(f"识别场景: {scene}, 时间提示: {time_prompt}")
-            
             # 构建交互提示词
             interaction_prompt = f"用户的屏幕显示：{recognition_text}。"
             if custom_prompt:
@@ -496,8 +633,8 @@ class ScreenCompanion(Star):
                     interaction_prompt += f" {holiday_prompt}"
                 if weather_prompt:
                     interaction_prompt += f" {weather_prompt}"
-                if system_prompt:
-                    interaction_prompt += f" {system_prompt}"
+                if system_status_prompt:
+                    interaction_prompt += f" {system_status_prompt}"
             interaction_prompt += " 请以诺星缘的身份，直接给出你的评论或互动，不要添加任何引言或开场白。要具体提及屏幕上的内容，针对用户正在进行的操作提供相关的互动。保持口语化的表达方式，简短自然，符合女高中生的说话风格。绝对不要使用括号描述动作或表情，直接通过语言表达你的意思。最多输出三句话，最好在两句话内完成回复。"
             
             # 如果有对话历史，添加到提示词中
@@ -521,17 +658,14 @@ class ScreenCompanion(Star):
                     logger.warning("LLM 未返回有效互动回复")
         
         except Exception as e:
-            logger.error(f"调用LLM失败: {e}")
-            # 如果视觉分析失败，返回一个默认的回复
+            logger.error(f"核心功能失败: {e}")
+            # 如果核心功能失败，返回一个默认的回复
             return [Plain("我已经看到了你的屏幕，但是无法进行分析。请确保你配置的视觉API正确。")]
         
         # 保存截图到临时文件
-        import os
-        import tempfile
-        
-        # 创建临时文件
+        # 创建临时文件，使用uuid生成唯一文件名
         temp_dir = tempfile.gettempdir()
-        temp_file_path = os.path.join(temp_dir, f"screen_shot_{id(self)}.jpg")
+        temp_file_path = os.path.join(temp_dir, f"screen_shot_{uuid.uuid4()}.jpg")
         
         # 将base64数据写入临时文件
         with open(temp_file_path, 'wb') as f:
@@ -541,21 +675,29 @@ class ScreenCompanion(Star):
         if self.config.get("save_local", False):
             try:
                 # 确保data目录存在
-                data_dir = os.path.join(os.path.dirname(__file__), "..", "..", "data")
-                os.makedirs(data_dir, exist_ok=True)
+                data_dir = StarTools.get_data_dir()
+                data_dir.mkdir(parents=True, exist_ok=True)
                 
                 # 保存截图到data目录
-                screenshot_path = os.path.join(data_dir, "screen_shot_latest.jpg")
-                import shutil
+                screenshot_path = str(data_dir / "screen_shot_latest.jpg")
                 shutil.copy2(temp_file_path, screenshot_path)
                 logger.info(f"截图已保存到: {screenshot_path}")
             except Exception as e:
                 logger.error(f"保存截图失败: {e}")
         
-        return [
-            Plain(response_text),
-            Image(file=temp_file_path)
-        ]
+        try:
+            return [
+                Plain(response_text),
+                Image(file=temp_file_path)
+            ]
+        finally:
+            # 发送完成后删除临时文件
+            try:
+                if os.path.exists(temp_file_path):
+                    os.remove(temp_file_path)
+                    logger.debug(f"临时文件已删除: {temp_file_path}")
+            except Exception as e:
+                logger.error(f"删除临时文件失败: {e}")
 
     @filter.command("kp")
     async def kp(self, event: AstrMessageEvent):
@@ -676,6 +818,11 @@ class ScreenCompanion(Star):
     @kpi_group.command("start")
     async def kpi_start(self, event: AstrMessageEvent):
         """启动自动观察任务"""
+        # 检查enabled配置
+        if not self.config.get("enabled", False):
+            yield event.plain_result("自动截图互动功能未在配置中启用，请先在配置文件中开启该选项。")
+            return
+        
         # 检查环境
         ok, err_msg = self._check_env(check_mic=False)
         if not ok:
@@ -697,6 +844,9 @@ class ScreenCompanion(Star):
             if task_id in self.auto_tasks:
                 self.auto_tasks[task_id].cancel()
                 del self.auto_tasks[task_id]
+                # 检查是否还有其他任务在运行
+                if not self.auto_tasks:
+                    self.is_running = False
                 yield event.plain_result(f"已停止任务 {task_id}。")
             else:
                 yield event.plain_result(f"任务 {task_id} 不存在。")
@@ -722,12 +872,14 @@ class ScreenCompanion(Star):
     @kpi_group.command("add")
     async def kpi_add(self, event: AstrMessageEvent, interval: int, *prompt):
         """添加自定义观察任务"""
-        if not prompt:
-            yield event.plain_result("用法: /kpi add [间隔秒数] [自定义提示词]")
+        # 检查enabled配置
+        if not self.config.get("enabled", False):
+            yield event.plain_result("自动截图互动功能未在配置中启用，请先在配置文件中开启该选项。")
             return
+        
+        custom_prompt = " ".join(prompt) if prompt else ""
         try:
             interval = max(30, int(interval))
-            custom_prompt = " ".join(prompt)
             if not self.is_running:
                 self.is_running = True
             task_id = f"task_{self.task_counter}"
@@ -761,9 +913,10 @@ class ScreenCompanion(Star):
         # 获取活跃时间段
         if interaction_mode in mode_settings:
             time_range = mode_settings[interaction_mode]["active_time_range"]
-            logger.debug(f"使用{interaction_mode}的活跃时间段: {time_range}")
+            logger.info(f"使用{interaction_mode}的活跃时间段: {time_range}")
         else:
             time_range = self.config.get("active_time_range", "").strip()
+            logger.info(f"使用自定义活跃时间段: {time_range}")
         
         if not time_range:
             return True
@@ -920,7 +1073,6 @@ class ScreenCompanion(Star):
             learning_file = os.path.join(self.learning_storage, "learning_data.json")
             if os.path.exists(learning_file):
                 with open(learning_file, "r", encoding="utf-8") as f:
-                    import json
                     self.learning_data = json.load(f)
                 logger.info("学习数据加载成功")
         except Exception as e:
@@ -935,7 +1087,6 @@ class ScreenCompanion(Star):
         try:
             learning_file = os.path.join(self.learning_storage, "learning_data.json")
             with open(learning_file, "w", encoding="utf-8") as f:
-                import json
                 json.dump(self.learning_data, f, ensure_ascii=False, indent=2)
             logger.info("学习数据保存成功")
         except Exception as e:
@@ -990,20 +1141,24 @@ class ScreenCompanion(Star):
 
     async def _task_scheduler(self):
         """任务调度器，限制并发任务数"""
-        while True:
+        while self.running:
             try:
                 # 从队列中获取任务
-                task_func, task_args = await self.task_queue.get()
-                
-                # 使用信号量限制并发
-                async with self.task_semaphore:
-                    try:
-                        await task_func(*task_args)
-                    except Exception as e:
-                        logger.error(f"执行任务时出错: {e}")
-                
-                # 标记任务完成
-                self.task_queue.task_done()
+                try:
+                    task_func, task_args = await asyncio.wait_for(self.task_queue.get(), timeout=1.0)
+                    
+                    # 使用信号量限制并发
+                    async with self.task_semaphore:
+                        try:
+                            await task_func(*task_args)
+                        except Exception as e:
+                            logger.error(f"执行任务时出错: {e}")
+                    
+                    # 标记任务完成
+                    self.task_queue.task_done()
+                except asyncio.TimeoutError:
+                    # 超时，继续循环检查running标志
+                    pass
             except Exception as e:
                 logger.error(f"任务调度器异常: {e}")
                 await asyncio.sleep(1)
@@ -1092,14 +1247,13 @@ class ScreenCompanion(Star):
             logger.warning("未安装麦克风监听所需的依赖库，麦克风监听功能已禁用")
             logger.warning("请执行: pip install pyaudio numpy 以启用麦克风监听功能")
         
-        while True:
+        while self.enable_mic_monitor:
             try:
-                if not self.enable_mic_monitor or not mic_deps_ok:
+                if not mic_deps_ok:
                     await asyncio.sleep(60)
                     continue
                 
                 # 获取当前时间
-                import time
                 current_time = time.time()
                 
                 # 检查是否在防抖时间内
@@ -1175,9 +1329,8 @@ class ScreenCompanion(Star):
 
     async def _custom_tasks_task(self):
         """自定义监控任务"""
-        while True:
+        while self.running:
             try:
-                import datetime
                 now = datetime.datetime.now()
                 current_hour = now.hour
                 current_minute = now.minute
@@ -1218,17 +1371,23 @@ class ScreenCompanion(Star):
                         except Exception as e:
                             logger.error(f"执行自定义任务时出错: {e}")
                 
-                # 等待1分钟
-                await asyncio.sleep(60)
+                # 等待1分钟，期间检查running标志
+                for _ in range(60):
+                    if not self.running:
+                        break
+                    await asyncio.sleep(1)
             except Exception as e:
                 logger.error(f"自定义任务异常: {e}")
-                await asyncio.sleep(60)
+                # 等待1分钟，期间检查running标志
+                for _ in range(60):
+                    if not self.running:
+                        break
+                    await asyncio.sleep(1)
 
     async def _diary_task(self):
         """日记任务"""
-        while True:
+        while self.running:
             try:
-                import datetime
                 now = datetime.datetime.now()
                 today = now.date()
                 
@@ -1242,11 +1401,18 @@ class ScreenCompanion(Star):
                     except Exception as e:
                         logger.error(f"解析日记时间失败: {e}")
                 
-                # 等待1分钟
-                await asyncio.sleep(60)
+                # 等待1分钟，期间检查running标志
+                for _ in range(60):
+                    if not self.running:
+                        break
+                    await asyncio.sleep(1)
             except Exception as e:
                 logger.error(f"日记任务异常: {e}")
-                await asyncio.sleep(60)
+                # 等待1分钟，期间检查running标志
+                for _ in range(60):
+                    if not self.running:
+                        break
+                    await asyncio.sleep(1)
     
     async def _auto_screen_task(self, event: AstrMessageEvent, task_id: str = "default", custom_prompt: str = "", interval: int = None):
         """后台自动截图分析任务"""
@@ -1258,12 +1424,44 @@ class ScreenCompanion(Star):
         logger.info(f"启动任务 {task_id}")
         try:
             while self.is_running:
+                # 检查任务是否被取消
+                if asyncio.current_task().cancelled():
+                    logger.info(f"任务 {task_id} 被取消")
+                    break
+                
                 # 检查是否在活跃时间段内
                 if not self._is_in_active_time_range():
-                    logger.debug("当前时间不在活跃时间段内，跳过本次执行")
+                    logger.info("当前时间不在活跃时间段内，跳过本次执行")
                     # 等待5分钟后再次检查
-                    await asyncio.sleep(300)
+                    for _ in range(30):
+                        if not self.is_running or asyncio.current_task().cancelled():
+                            break
+                        await asyncio.sleep(10)
                     continue
+                
+                # 预设模式参数
+                mode_settings = {
+                    "轻度互动模式": {
+                        "check_interval": 180,
+                        "trigger_probability": 3,
+                        "active_time_range": "09:00-23:00"
+                    },
+                    "中度互动模式": {
+                        "check_interval": 60,
+                        "trigger_probability": 8,
+                        "active_time_range": "19:00-23:00"
+                    },
+                    "高频互动模式": {
+                        "check_interval": 30,
+                        "trigger_probability": 20,
+                        "active_time_range": "10:00-22:00"
+                    },
+                    "静默模式": {
+                        "check_interval": 300,
+                        "trigger_probability": 1,
+                        "active_time_range": "14:00-16:00"
+                    }
+                }
                 
                 # 首先检查是否有自定义间隔
                 if interval is not None:
@@ -1272,30 +1470,6 @@ class ScreenCompanion(Star):
                 else:
                     # 根据互动模式设置参数
                     interaction_mode = self.config.get("interaction_mode", "自定义")
-                    
-                    # 预设模式参数
-                    mode_settings = {
-                        "轻度互动模式": {
-                            "check_interval": 180,
-                            "trigger_probability": 3,
-                            "active_time_range": "09:00-23:00"
-                        },
-                        "中度互动模式": {
-                            "check_interval": 60,
-                            "trigger_probability": 8,
-                            "active_time_range": "19:00-23:00"
-                        },
-                        "高频互动模式": {
-                            "check_interval": 30,
-                            "trigger_probability": 20,
-                            "active_time_range": "10:00-22:00"
-                        },
-                        "静默模式": {
-                            "check_interval": 300,
-                            "trigger_probability": 1,
-                            "active_time_range": "14:00-16:00"
-                        }
-                    }
                     
                     # 获取检查间隔
                     if interaction_mode in mode_settings:
@@ -1309,16 +1483,31 @@ class ScreenCompanion(Star):
                             check_interval = 300
                         logger.info(f"任务 {task_id} 使用配置间隔: {check_interval} 秒")
                 
-                # 等待检查间隔
+                # 等待检查间隔，期间定期检查is_running标志和任务取消状态
                 logger.info(f"等待 {check_interval} 秒后进行触发判定")
-                await asyncio.sleep(check_interval)
+                elapsed = 0
+                while elapsed < check_interval:
+                    if not self.is_running or asyncio.current_task().cancelled():
+                        break
+                    # 每10秒检查一次互动模式是否改变
+                    if elapsed % 10 == 0 and interval is None:
+                        new_interaction_mode = self.config.get("interaction_mode", "自定义")
+                        if new_interaction_mode != interaction_mode:
+                            interaction_mode = new_interaction_mode
+                            if interaction_mode in mode_settings:
+                                new_check_interval = mode_settings[interaction_mode]["check_interval"]
+                                if new_check_interval != check_interval:
+                                    check_interval = new_check_interval
+                                    logger.info(f"互动模式已改变为{interaction_mode}，更新检查间隔为 {check_interval} 秒")
+                    await asyncio.sleep(1)
+                    elapsed += 1
                 
-                if not self.is_running: 
+                if not self.is_running or asyncio.current_task().cancelled(): 
                     break
                 
                 # 再次检查是否在活跃时间段内
                 if not self._is_in_active_time_range():
-                    logger.debug("当前时间不在活跃时间段内，跳过本次执行")
+                    logger.info("当前时间不在活跃时间段内，跳过本次执行")
                     continue
                 
                 # 系统状态检测
@@ -1343,6 +1532,8 @@ class ScreenCompanion(Star):
                     trigger = True
                     logger.info("系统资源使用高，强制触发窥屏")
                 else:
+                    # 重新获取互动模式，确保模式切换生效
+                    interaction_mode = self.config.get("interaction_mode", "自定义")
                     # 进行触发判定
                     import random
                     if interaction_mode in mode_settings:
@@ -1366,11 +1557,14 @@ class ScreenCompanion(Star):
                 if trigger:
                     logger.info("触发判定通过，开始执行屏幕分析")
                     try:
+                        # 再次检查is_running标志和任务取消状态
+                        if not self.is_running or asyncio.current_task().cancelled():
+                            break
+                        
                         image_bytes, active_window_title = await asyncio.wait_for(self._capture_screen_bytes(), timeout=10.0)
                         components = await asyncio.wait_for(self._analyze_screen(image_bytes, session=event, active_window_title=active_window_title, custom_prompt=custom_prompt), timeout=120.0)
                         
                         chain = MessageChain()
-                        chain.chain.append(Plain("【定时观察汇报】\n"))
                         for comp in components:
                             chain.chain.append(comp)
                         
@@ -1409,24 +1603,25 @@ class ScreenCompanion(Star):
                             if len(segments) > 1:
                                 # 发送前 N-1 段
                                 for i in range(len(segments) - 1):
+                                    if not self.is_running or asyncio.current_task().cancelled():
+                                        break
                                     segment = segments[i]
                                     if segment.strip():
-                                        # 添加前缀
-                                        if i == 0:
-                                            segment = "【定时观察汇报】\n" + segment
+                                        # 不需要添加前缀，让回复更自然
                                         await self.context.send_message(event.unified_msg_origin, MessageChain([Plain(segment)]))
                                         # 添加小延迟，使回复更自然
                                         await asyncio.sleep(0.5)
                                 # 最后一段
-                                if segments[-1].strip():
+                                if self.is_running and not asyncio.current_task().cancelled() and segments[-1].strip():
                                     await self.context.send_message(event.unified_msg_origin, MessageChain([Plain(segments[-1])]))
                             else:
                                 # 只有一段，直接发送
-                                message = "【定时观察汇报】\n" + text_content
-                                await self.context.send_message(event.unified_msg_origin, MessageChain([Plain(message)]))
+                                if self.is_running and not asyncio.current_task().cancelled():
+                                    await self.context.send_message(event.unified_msg_origin, MessageChain([Plain(text_content)]))
                         else:
                             # 发送带图片的消息
-                            await self.context.send_message(event.unified_msg_origin, chain)
+                            if self.is_running and not asyncio.current_task().cancelled():
+                                await self.context.send_message(event.unified_msg_origin, chain)
                         
                         # 尝试将消息添加到对话历史
                         try:
@@ -1490,5 +1685,4 @@ class ScreenCompanion(Star):
         if current_segment:
             segments.append(current_segment)
         
-
         return segments
